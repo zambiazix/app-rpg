@@ -1,0 +1,410 @@
+// FichaPersonagem.jsx
+import React, { useEffect, useState } from "react";
+import {
+  Box,
+  Button,
+  Grid,
+  Paper,
+  TextField,
+  Typography,
+  Slider,
+  IconButton,
+} from "@mui/material";
+import AddIcon from "@mui/icons-material/Add";
+import DeleteIcon from "@mui/icons-material/Delete";
+import { db } from "../firebaseConfig";
+import { doc, getDoc, setDoc } from "firebase/firestore";
+import AudioRoom from "./components/AudioRoom";
+
+/*
+  ESTE COMPONENTE EXIBE A FICHA EXATAMENTE COM OS RÓTULOS DO MODELO
+  - Props: user, fichaId (doc id), isMestre
+  - Cria ficha vazia se não existir
+  - Botão "Salvar Ficha" grava no Firestore
+*/
+
+export default function FichaPersonagem({ user, fichaId, isMestre }) {
+  const [ficha, setFicha] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  const modelo = {
+    nome: "",
+    genero: "",
+    idade: "",
+    altura: "",
+    peso: "",
+    movimentacao: "",
+    defeitos: "",
+    tracos: "",
+    pontosVida: 0,
+    pontosEnergia: 0,
+    armadura: "0/25",
+    caracteristicas: "",
+
+    atributos: {
+      forca: 0,
+      destreza: 0,
+      agilidade: 0,
+      constituicao: 0,
+      inteligencia: 0,
+      vontade: 0,
+    },
+
+    pericias: {
+      atletismo: 0,
+      luta: 0,
+      armaBranca: 0,
+      armaDistancia: 0,
+      furtividade: 0,
+      sobrevivencia: 0,
+      conhecimento: 0,
+      medicina: 0,
+      natureza: 0,
+      percepcao: 0,
+      investigacao: 0,
+      labia: 0,
+      performance: 0,
+      intimidacao: 0,
+      aura: 0,
+    },
+
+    habilidades: [], // [{ nome, descricao, condicoes, limitacoes }]
+    moedas: { C: 0, P: 0, O: 0 },
+    equipamentos: [],
+    vestes: [],
+    diversos: [],
+    anotacoes: "",
+    dono: user?.email || "",
+  };
+
+  // Rótulos EXACTAMENTE como você enviou (NÃO MODIFICAR texto)
+  const LABELS = {
+    titulo: "● FICHA RPG RÉQUIEM ●",
+    nome: "┃🌐  Nome:",
+    separador: "┃────────────────────┃",
+    genero: "┃⚧  Gênero:",
+    idade: "┃🔞  Idade:",
+    altura: "┃📏  Altura:",
+    peso: "┃⚖  Peso:",
+    movimentacao: "┃🏃🏻‍♂  Movimentação:",
+    defeitos: "┃🦠  Defeitos:",
+    tracos: "┃🧬  Traços:",
+    pontosVida: "┃🩸  Pontos de Vida:",
+    pontosEnergia: "┃🔋  Pontos de Energia:",
+    armadura: "┃🛡 Armadura: 0/25",
+    caracteristicas: "┃⭐️ Características:",
+    atributosTitle: "● ATRIBUTOS ●",
+    periciasTitle: "● PERÍCIAS ●",
+    habilidadesTitle: "● Habilidades Auranas de [Tipo de Aura] ●",
+    habilidadesNomeLabel: "🔰 • [Nome da Habilidade]",
+    habilidadesDescLabel: "💠 [Descrição da Habilidade]",
+    habilidadesCondLabel: "📜 Condições da Habilidade (C)",
+    habilidadesLimLabel: "🌀 Limitações da Habilidade (L)",
+    itensTitle: "● Itens [Valor Máximo]●",
+    moedasLabel: "┃💰 Moedas: (C):   (P):   (O):",
+    equipamentoLabel: "┃⚔ Equipamento:",
+    vestesLabel: "┃🥼 Vestes:",
+    diversosLabel: "┃🧳 Diversos:",
+    anotacoesTitle: "● Anotações:",
+  };
+
+  useEffect(() => {
+    let mounted = true;
+    async function load() {
+      if (!fichaId) {
+        setFicha({ ...modelo });
+        setLoading(false);
+        return;
+      }
+      setLoading(true);
+      try {
+        const ref = doc(db, "fichas", fichaId);
+        const snap = await getDoc(ref);
+        if (snap.exists()) {
+          const dados = snap.data();
+          // assegura estrutura
+          const merged = {
+            ...modelo,
+            ...dados,
+            atributos: { ...modelo.atributos, ...(dados.atributos || {}) },
+            pericias: { ...modelo.pericias, ...(dados.pericias || {}) },
+            habilidades: Array.isArray(dados.habilidades) ? dados.habilidades : modelo.habilidades,
+            moedas: { ...modelo.moedas, ...(dados.moedas || {}) },
+            equipamentos: Array.isArray(dados.equipamentos) ? dados.equipamentos : modelo.equipamentos,
+            vestes: Array.isArray(dados.vestes) ? dados.vestes : modelo.vestes,
+            diversos: Array.isArray(dados.diversos) ? dados.diversos : modelo.diversos,
+            anotacoes: dados.anotacoes ?? modelo.anotacoes,
+          };
+          if (mounted) setFicha(merged);
+        } else {
+          // cria doc com modelo
+          await setDoc(ref, modelo);
+          if (mounted) setFicha({ ...modelo });
+        }
+      } catch (err) {
+        console.error("Erro carregar ficha:", err);
+        if (mounted) setFicha({ ...modelo });
+      } finally {
+        if (mounted) setLoading(false);
+      }
+    }
+    load();
+    return () => (mounted = false);
+  }, [fichaId, user]);
+
+  function setCampo(key, value) {
+    setFicha((p) => ({ ...p, [key]: value }));
+  }
+  function setSubCampo(obj, key, value) {
+    setFicha((p) => ({ ...p, [obj]: { ...p[obj], [key]: value } }));
+  }
+
+  // habilidades
+  function addHabilidade() {
+    setFicha((p) => ({ ...p, habilidades: [...(p.habilidades || []), { nome: "", descricao: "", condicoes: "", limitacoes: "" }] }));
+  }
+  function updateHabilidade(i, field, value) {
+    setFicha((p) => {
+      const hs = [...(p.habilidades || [])];
+      hs[i] = { ...hs[i], [field]: value };
+      return { ...p, habilidades: hs };
+    });
+  }
+  function removeHabilidade(i) {
+    setFicha((p) => ({ ...p, habilidades: p.habilidades.filter((_, idx) => idx !== i) }));
+  }
+
+  // itens
+  function addItem(tipo) {
+    setFicha((p) => ({ ...p, [tipo]: [...(p[tipo] || []), ""] }));
+  }
+  function updateItem(tipo, idx, value) {
+    setFicha((p) => {
+      const arr = [...(p[tipo] || [])];
+      arr[idx] = value;
+      return { ...p, [tipo]: arr };
+    });
+  }
+  function removeItem(tipo, idx) {
+    setFicha((p) => ({ ...p, [tipo]: p[tipo].filter((_, i) => i !== idx) }));
+  }
+
+  async function salvar() {
+    if (!fichaId) return alert("FichaId inválido.");
+    setSaving(true);
+    try {
+      const ref = doc(db, "fichas", fichaId);
+      // normaliza antes de salvar
+      const toSave = {
+        ...ficha,
+        atributos: Object.fromEntries(Object.entries(ficha.atributos).map(([k, v]) => [k, Number(v || 0)])),
+        pericias: Object.fromEntries(Object.entries(ficha.pericias).map(([k, v]) => [k, Number(v || 0)])),
+        moedas: { C: Number(ficha.moedas?.C || 0), P: Number(ficha.moedas?.P || 0), O: Number(ficha.moedas?.O || 0) },
+        habilidades: Array.isArray(ficha.habilidades) ? ficha.habilidades : [],
+        equipamentos: Array.isArray(ficha.equipamentos) ? ficha.equipamentos : [],
+        vestes: Array.isArray(ficha.vestes) ? ficha.vestes : [],
+        diversos: Array.isArray(ficha.diversos) ? ficha.diversos : [],
+      };
+      await setDoc(ref, toSave);
+      alert("Ficha salva com sucesso!");
+    } catch (err) {
+      console.error(err);
+      alert("Erro ao salvar ficha (veja console).");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (loading) return <Box p={2}><Typography>Carregando ficha...</Typography></Box>;
+  if (!ficha) return <Box p={2}><Typography>Erro ao carregar ficha.</Typography></Box>;
+
+  return (
+    <Paper sx={{ p: 2, bgcolor: "#07121a", color: "#fff" }}>
+      <Typography variant="h6" sx={{ mb: 1 }}>{LABELS.titulo}</Typography>
+
+      {/* BÁSICOS - ordem EXATA */}
+      <Grid container spacing={2}>
+        <Grid item xs={12} md={6}>
+          <Typography>{LABELS.nome}</Typography>
+          <TextField fullWidth size="small" value={ficha.nome} onChange={(e) => setCampo("nome", e.target.value)} sx={{ mb: 1 }} />
+
+          <Typography>{LABELS.genero}</Typography>
+          <TextField fullWidth size="small" value={ficha.genero} onChange={(e) => setCampo("genero", e.target.value)} sx={{ mb: 1 }} />
+
+          <Typography>{LABELS.idade}</Typography>
+          <TextField fullWidth size="small" value={ficha.idade} onChange={(e) => setCampo("idade", e.target.value)} sx={{ mb: 1 }} />
+
+          <Typography>{LABELS.altura}</Typography>
+          <TextField fullWidth size="small" value={ficha.altura} onChange={(e) => setCampo("altura", e.target.value)} sx={{ mb: 1 }} />
+
+          <Typography>{LABELS.peso}</Typography>
+          <TextField fullWidth size="small" value={ficha.peso} onChange={(e) => setCampo("peso", e.target.value)} sx={{ mb: 1 }} />
+
+          <Typography>{LABELS.movimentacao}</Typography>
+          <TextField fullWidth size="small" value={ficha.movimentacao} onChange={(e) => setCampo("movimentacao", e.target.value)} sx={{ mb: 1 }} />
+        </Grid>
+
+        <Grid item xs={12} md={6}>
+          <Typography>{LABELS.defeitos}</Typography>
+          <TextField fullWidth size="small" multiline value={ficha.defeitos} onChange={(e) => setCampo("defeitos", e.target.value)} sx={{ mb: 1 }} />
+
+          <Typography>{LABELS.tracos}</Typography>
+          <TextField fullWidth size="small" multiline value={ficha.tracos} onChange={(e) => setCampo("tracos", e.target.value)} sx={{ mb: 1 }} />
+
+          <Typography>{LABELS.pontosVida}</Typography>
+          <TextField fullWidth size="small" type="number" value={ficha.pontosVida} onChange={(e) => setCampo("pontosVida", Number(e.target.value || 0))} sx={{ mb: 1 }} />
+
+          <Typography>{LABELS.pontosEnergia}</Typography>
+          <TextField fullWidth size="small" type="number" value={ficha.pontosEnergia} onChange={(e) => setCampo("pontosEnergia", Number(e.target.value || 0))} sx={{ mb: 1 }} />
+
+          <Typography>{LABELS.armadura}</Typography>
+          <TextField fullWidth size="small" value={ficha.armadura} onChange={(e) => setCampo("armadura", e.target.value)} sx={{ mb: 1 }} />
+
+          <Typography>{LABELS.caracteristicas}</Typography>
+          <TextField fullWidth size="small" multiline value={ficha.caracteristicas} onChange={(e) => setCampo("caracteristicas", e.target.value)} sx={{ mb: 1 }} />
+        </Grid>
+      </Grid>
+
+      {/* ATRIBUTOS */}
+      <Box mt={2}>
+        <Typography>{LABELS.atributosTitle}</Typography>
+        <Box sx={{ mt: 1 }}>
+          {Object.entries(ficha.atributos).map(([k, v]) => {
+            // label exact from your model
+            const labelsMap = {
+              forca: "┃🔴 Força: (●○○○○)",
+              destreza: "┃🟢 Destreza: (●○○○○)",
+              agilidade: "┃🔵 Agilidade: (●○○○○)",
+              constituicao: "┃🟠 Constituição: (●○○○○)",
+              inteligencia: "┃⚪ Inteligência: (●○○○○)",
+              vontade: "┃🟡 Vontade (●○○○○)",
+            };
+            return (
+              <Box key={k} sx={{ mb: 1 }}>
+                <Typography sx={{ fontSize: 13 }}>{labelsMap[k]}</Typography>
+                <Slider
+                  value={Number(v || 0)}
+                  min={0}
+                  max={5}
+                  step={1}
+                  onChange={(e, val) => setSubCampo("atributos", k, val)}
+                  valueLabelDisplay="auto"
+                />
+              </Box>
+            );
+          })}
+        </Box>
+      </Box>
+
+      {/* PERÍCIAS */}
+      <Box mt={2}>
+        <Typography>{LABELS.periciasTitle}</Typography>
+        <Box sx={{ mt: 1 }}>
+          {Object.entries(ficha.pericias).map(([k, v]) => {
+            const perLabels = {
+              atletismo: "┃🔴 Atletismo (○○○○○)",
+              luta: "┃🔴 Luta (○○○○○)",
+              armaBranca: "┃🔴 Arma Branca (○○○○○)",
+              armaDistancia: "┃🟢 Arma à Distância (○○○○○)",
+              furtividade: "┃🔵 Furtividade (○○○○○)",
+              sobrevivencia: "┃🟠 Sobrevivência (○○○○○)",
+              conhecimento: "┃⚪ Conhecimento (○○○○○)",
+              medicina: "┃⚪ Medicina (○○○○○)",
+              natureza: "┃⚪ Natureza (○○○○○)",
+              percepcao: "┃⚪ Percepção (○○○○○)",
+              investigacao: "┃⚪ Investigação (○○○○○)",
+              labia: "┃⚪ Lábia (○○○○○)",
+              performance: "┃⚪ Performance (○○○○○)",
+              intimidacao: "┃🟡 Intimidação (○○○○○)",
+              aura: "┃🟡 Aura (○○○○○)",
+            };
+            return (
+              <Box key={k} sx={{ mb: 1 }}>
+                <Typography sx={{ fontSize: 13 }}>{perLabels[k]}</Typography>
+                <Slider value={Number(v || 0)} min={0} max={5} step={1} onChange={(e, val) => setSubCampo("pericias", k, val)} valueLabelDisplay="auto" />
+              </Box>
+            );
+          })}
+        </Box>
+      </Box>
+
+      {/* HABILIDADES AURANAS */}
+      <Box mt={2}>
+        <Typography>{LABELS.habilidadesTitle}</Typography>
+        <Box sx={{ mt: 1 }}>
+          {ficha.habilidades.map((h, i) => (
+            <Paper key={i} sx={{ p: 1, mb: 1, bgcolor: "#071b23" }}>
+              <Grid container spacing={1}>
+                <Grid item xs={11}>
+                  <TextField fullWidth size="small" label={LABELS.habilidadesNomeLabel} value={h.nome} onChange={(e) => updateHabilidade(i, "nome", e.target.value)} sx={{ mb: 1 }} />
+                  <TextField fullWidth size="small" label={LABELS.habilidadesDescLabel} multiline value={h.descricao} onChange={(e) => updateHabilidade(i, "descricao", e.target.value)} sx={{ mb: 1 }} />
+                  <TextField fullWidth size="small" label={LABELS.habilidadesCondLabel} multiline value={h.condicoes} onChange={(e) => updateHabilidade(i, "condicoes", e.target.value)} sx={{ mb: 1 }} />
+                  <TextField fullWidth size="small" label={LABELS.habilidadesLimLabel} multiline value={h.limitacoes} onChange={(e) => updateHabilidade(i, "limitacoes", e.target.value)} />
+                </Grid>
+                <Grid item xs={1} sx={{ display: "flex", alignItems: "start" }}>
+                  <IconButton color="error" onClick={() => removeHabilidade(i)}><DeleteIcon /></IconButton>
+                </Grid>
+              </Grid>
+            </Paper>
+          ))}
+          <Button startIcon={<AddIcon />} variant="outlined" onClick={addHabilidade}>Adicionar Habilidade</Button>
+        </Box>
+      </Box>
+
+      {/* ITENS / MOEDAS */}
+      <Box mt={2}>
+        <Typography>{LABELS.itensTitle}</Typography>
+
+        <Typography sx={{ mt: 1 }}>{LABELS.moedasLabel}</Typography>
+        <Grid container spacing={1} sx={{ mt: 1 }}>
+          <Grid item xs={4}><TextField size="small" label="C (Cobre)" type="number" value={ficha.moedas?.C ?? 0} onChange={(e) => setCampo("moedas", { ...ficha.moedas, C: Number(e.target.value || 0) })} /></Grid>
+          <Grid item xs={4}><TextField size="small" label="P (Prata)" type="number" value={ficha.moedas?.P ?? 0} onChange={(e) => setCampo("moedas", { ...ficha.moedas, P: Number(e.target.value || 0) })} /></Grid>
+          <Grid item xs={4}><TextField size="small" label="O (Ouro)" type="number" value={ficha.moedas?.O ?? 0} onChange={(e) => setCampo("moedas", { ...ficha.moedas, O: Number(e.target.value || 0) })} /></Grid>
+        </Grid>
+
+        <Box mt={2}>
+          <Typography>{LABELS.equipamentoLabel}</Typography>
+          {ficha.equipamentos.map((it, i) => (
+            <Grid container spacing={1} key={i} alignItems="center" sx={{ mt: 1 }}>
+              <Grid item xs={11}><TextField fullWidth size="small" value={it} onChange={(e) => updateItem("equipamentos", i, e.target.value)} /></Grid>
+              <Grid item xs={1}><IconButton color="error" onClick={() => removeItem("equipamentos", i)}><DeleteIcon /></IconButton></Grid>
+            </Grid>
+          ))}
+          <Button startIcon={<AddIcon />} variant="outlined" sx={{ mt: 1 }} onClick={() => addItem("equipamentos")}>Adicionar Equipamento</Button>
+
+          <Typography sx={{ mt: 2 }}>{LABELS.vestesLabel}</Typography>
+          {ficha.vestes.map((it, i) => (
+            <Grid container spacing={1} key={i} alignItems="center" sx={{ mt: 1 }}>
+              <Grid item xs={11}><TextField fullWidth size="small" value={it} onChange={(e) => updateItem("vestes", i, e.target.value)} /></Grid>
+              <Grid item xs={1}><IconButton color="error" onClick={() => removeItem("vestes", i)}><DeleteIcon /></IconButton></Grid>
+            </Grid>
+          ))}
+          <Button startIcon={<AddIcon />} variant="outlined" sx={{ mt: 1 }} onClick={() => addItem("vestes")}>Adicionar Veste</Button>
+
+          <Typography sx={{ mt: 2 }}>{LABELS.diversosLabel}</Typography>
+          {ficha.diversos.map((it, i) => (
+            <Grid container spacing={1} key={i} alignItems="center" sx={{ mt: 1 }}>
+              <Grid item xs={11}><TextField fullWidth size="small" value={it} onChange={(e) => updateItem("diversos", i, e.target.value)} /></Grid>
+              <Grid item xs={1}><IconButton color="error" onClick={() => removeItem("diversos", i)}><DeleteIcon /></IconButton></Grid>
+            </Grid>
+          ))}
+          <Button startIcon={<AddIcon />} variant="outlined" sx={{ mt: 1 }} onClick={() => addItem("diversos")}>Adicionar Diverso</Button>
+        </Box>
+      </Box>
+
+      {/* ANOTAÇÕES */}
+      <Box mt={2}>
+        <Typography>{LABELS.anotacoesTitle}</Typography>
+        <TextField fullWidth multiline rows={4} value={ficha.anotacoes} onChange={(e) => setCampo("anotacoes", e.target.value)} />
+      </Box>
+
+      {/* SALVAR */}
+      <Box mt={2} sx={{ display: "flex", justifyContent: "flex-end" }}>
+        <Button variant="contained" color="primary" onClick={salvar} disabled={saving}>
+          {saving ? "Salvando..." : "Salvar Ficha"}
+        </Button>
+      </Box>
+    </Paper>
+  );
+}
