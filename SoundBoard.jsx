@@ -1,3 +1,4 @@
+// src/components/SoundBoard.jsx
 import React, { useState, useEffect, useRef } from "react";
 import {
   Paper,
@@ -14,26 +15,41 @@ import { db } from "../firebaseConfig";
 import { doc, setDoc, onSnapshot, serverTimestamp } from "firebase/firestore";
 import { useAudio } from "../context/AudioProvider";
 
+// O SoundBoard continua visível apenas para o mestre (isMaster)
+// Os eventos de play/stop/volume são enviados via socket.io (AudioProvider)
+
 export default function SoundBoard({ isMaster }) {
   const [musicTracks, setMusicTracks] = useState([]);
   const [ambianceTracks, setAmbianceTracks] = useState([]);
-  const [interactionAllowed, setInteractionAllowed] = useState(false);
   const [volumes, setVolumes] = useState({});
   const unsubRef = useRef(null);
   const saveTimeoutRef = useRef(null);
 
-  // Funções globais do AudioProvider
-  const { playMusic, pauseMusic, stopAllMusic, setVolume, getVolume, playingTracks, startVoice, stopVoice } = useAudio();
+  const {
+    playMusic,
+    pauseMusic,
+    stopAllMusic,
+    setVolume,
+    getVolume,
+    playingTracks,
+    socket,
+  } = useAudio();
 
-  // Carrega a lista de músicas e ambientes
+  // Carrega a lista de músicas do sounds.json
   useEffect(() => {
     async function load() {
       try {
         let res = await fetch("/sounds.json");
         if (!res.ok) throw new Error("sounds.json não encontrado");
         const data = await res.json();
-        const music = (data.music || []).map((f) => ({ name: stripExt(f), url: resolveUrl(f) }));
-        const ambience = (data.ambience || []).map((f) => ({ name: stripExt(f), url: resolveUrl(f) }));
+        const music = (data.music || []).map((f) => ({
+          name: stripExt(f),
+          url: resolveUrl(f),
+        }));
+        const ambience = (data.ambience || []).map((f) => ({
+          name: stripExt(f),
+          url: resolveUrl(f),
+        }));
         setMusicTracks(music);
         setAmbianceTracks(ambience);
       } catch (err) {
@@ -47,71 +63,105 @@ export default function SoundBoard({ isMaster }) {
     return filename.replace(/^.*[\\/]/, "").replace(/\.[^/.]+$/, "");
   }
 
+  // 🔧 URLs absolutas sempre (garante compatibilidade localhost e Render)
   function resolveUrl(file) {
     if (!file) return file;
     if (/^https?:\/\//i.test(file)) return file;
-    if (file.startsWith("/")) return file;
-    return `/${file}`;
+    return `${window.location.origin}/${file.replace(/^\//, "")}`;
   }
 
-  function handleActivateAudio() {
-    setInteractionAllowed(true);
-  }
-
-  // Sincronização com Firestore (opcional)
-  useEffect(() => {
-    try {
-      unsubRef.current = onSnapshot(doc(db, "sound", "current"), (snap) => {
-        const data = snap?.data?.() ?? snap?.data() ?? snap;
-        if (!data) return;
-        if (!isMaster) {
-          // No futuro: poderíamos tocar músicas remotas aqui
-        }
-      });
-    } catch {}
-    return () => unsubRef.current && unsubRef.current();
-  }, [isMaster]);
-
-  function scheduleSaveState(newState) {
-    if (!isMaster) return;
-    if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
-    saveTimeoutRef.current = setTimeout(() => saveStateToFirestore(newState), 250);
-  }
-
-  async function saveStateToFirestore(state) {
-    if (!isMaster) return;
-    await setDoc(doc(db, "sound", "current"), { sounds: state, updatedAt: serverTimestamp() });
-  }
-
-  // Funções de controle
+  // Mestre: tocar música → emite para todos
   function handlePlay(url) {
     playMusic(url);
-    setVolumes((prev) => ({ ...prev, [url]: 100 })); // Volume inicial 100%
-    scheduleSaveState([...playingTracks, url].map((u) => ({ url: u, playing: true })));
+    setVolumes((prev) => ({ ...prev, [url]: 100 }));
+    try {
+      socket?.emit?.("play-music", url);
+    } catch (err) {
+      console.warn("Socket emitir play-music falhou:", err);
+    }
+    scheduleSaveState(
+      [...new Set([...playingTracks, url])].map((u) => ({
+        url: u,
+        playing: true,
+        volume: volumes[u] ?? 100,
+      }))
+    );
   }
 
   function handleStop(url) {
     pauseMusic(url);
     setVolumes((prev) => {
       const copy = { ...prev };
-      delete copy[url]; // Remove volume da música parada
+      delete copy[url];
       return copy;
     });
-    scheduleSaveState(playingTracks.filter((u) => u !== url).map((u) => ({ url: u, playing: true })));
+    try {
+      socket?.emit?.("stop-music", url);
+    } catch (err) {
+      console.warn("Socket emitir stop-music falhou:", err);
+    }
+    scheduleSaveState(
+      playingTracks
+        .filter((u) => u !== url)
+        .map((u) => ({ url: u, playing: true, volume: volumes[u] ?? 100 }))
+    );
   }
 
   function handleStopAll() {
     stopAllMusic();
     setVolumes({});
+    try {
+      socket?.emit?.("stop-all-music");
+    } catch (err) {
+      console.warn("Socket emitir stop-all-music falhou:", err);
+    }
     scheduleSaveState([]);
   }
 
   function handleVolume(url, value) {
-    setVolumes((prev) => ({ ...prev, [url]: value }));
     setVolume(url, value);
+    setVolumes((prev) => ({ ...prev, [url]: value }));
+    try {
+      socket?.emit?.("volume-music", { url, value });
+    } catch (err) {
+      console.warn("Socket emitir volume-music falhou:", err);
+    }
+    scheduleSaveState(
+      playingTracks.map((u) => ({
+        url: u,
+        playing: true,
+        volume: u === url ? value : volumes[u] ?? 100,
+      }))
+    );
   }
 
-  // Atualiza sliders quando tocar música ou alterar volumes
+  // Firestore (mantém estado sincronizado para quem entra depois)
+  useEffect(() => {
+    try {
+      unsubRef.current = onSnapshot(doc(db, "sound", "current"), (snap) => {
+        const data = snap?.data?.() ?? snap;
+        if (!data) return;
+      });
+    } catch {}
+    return () => unsubRef.current && unsubRef.current();
+  }, []);
+
+  function scheduleSaveState(newState) {
+    if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
+    saveTimeoutRef.current = setTimeout(
+      () => saveStateToFirestore(newState),
+      250
+    );
+  }
+
+  async function saveStateToFirestore(state) {
+    await setDoc(doc(db, "sound", "current"), {
+      sounds: state,
+      updatedAt: serverTimestamp(),
+    });
+  }
+
+  // Atualiza sliders quando playingTracks muda
   useEffect(() => {
     const updated = {};
     playingTracks.forEach((url) => {
@@ -120,7 +170,6 @@ export default function SoundBoard({ isMaster }) {
     setVolumes((prev) => ({ ...prev, ...updated }));
   }, [playingTracks, getVolume]);
 
-  // Renderiza lista de faixas
   function renderList(title, tracks) {
     return (
       <>
@@ -142,28 +191,40 @@ export default function SoundBoard({ isMaster }) {
                   gap: 1,
                 }}
               >
-                <ListItemText
-                  primary={t.name}
-                  primaryTypographyProps={{
-                    sx: { whiteSpace: "normal", wordBreak: "break-word", textAlign: "left", width: "100%" },
+                <ListItemText primary={t.name} />
+                <Box
+                  sx={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 1,
+                    width: "100%",
+                    justifyContent: "space-between",
                   }}
-                />
-                <Box sx={{ display: "flex", alignItems: "center", gap: 1, width: "100%", justifyContent: "space-between" }}>
+                >
                   {playing ? (
-                    <Button variant="outlined" size="small" color="error" onClick={() => handleStop(t.url)}>
+                    <Button
+                      variant="outlined"
+                      size="small"
+                      color="error"
+                      onClick={() => handleStop(t.url)}
+                    >
                       Parar
                     </Button>
                   ) : (
-                    <Button variant="contained" size="small" onClick={() => handlePlay(t.url)}>
+                    <Button
+                      variant="contained"
+                      size="small"
+                      onClick={() => handlePlay(t.url)}
+                    >
                       Play
                     </Button>
                   )}
                   <Box sx={{ flex: 1, ml: 1 }}>
                     <Slider
                       value={vol100}
-                      onChange={(_, v) => handleVolume(t.url, Array.isArray(v) ? v[0] : v)}
-                      aria-label="volume"
-                      size="small"
+                      onChange={(_, v) =>
+                        handleVolume(t.url, Array.isArray(v) ? v[0] : v)
+                      }
                       min={0}
                       max={100}
                     />
@@ -185,28 +246,20 @@ export default function SoundBoard({ isMaster }) {
         🎵 Trilha Sonora
       </Typography>
 
-      {!interactionAllowed ? (
-        <Button variant="contained" color="primary" fullWidth sx={{ mb: 2 }} onClick={handleActivateAudio}>
-          Ativar Áudio
+      {renderList("🎶 Música", musicTracks)}
+      <Divider sx={{ my: 1 }} />
+      {renderList("🌲 Ambiente", ambianceTracks)}
+
+      {playingTracks.length > 0 && (
+        <Button
+          variant="outlined"
+          color="error"
+          fullWidth
+          sx={{ mt: 1 }}
+          onClick={handleStopAll}
+        >
+          Parar Todos
         </Button>
-      ) : (
-        <>
-          {renderList("🎶 Música", musicTracks)}
-          <Divider sx={{ my: 1 }} />
-          {renderList("🌲 Ambiente", ambianceTracks)}
-          {playingTracks.length > 0 && (
-            <Button variant="outlined" color="error" fullWidth sx={{ mt: 1 }} onClick={handleStopAll}>
-              Parar Todos
-            </Button>
-          )}
-          <Divider sx={{ my: 1 }} />
-          <Button variant="contained" color="secondary" fullWidth sx={{ mt: 1 }} onClick={startVoice}>
-            Iniciar Chamada de Voz
-          </Button>
-          <Button variant="outlined" color="secondary" fullWidth sx={{ mt: 1 }} onClick={stopVoice}>
-            Encerrar Chamada de Voz
-          </Button>
-        </>
       )}
     </Paper>
   );
