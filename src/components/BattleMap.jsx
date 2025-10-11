@@ -1,11 +1,13 @@
-// src/components/BattleMap.jsx
 import React, { useState, useRef, useEffect } from "react";
 import { Stage, Layer, Line, Image as KonvaImage, Transformer } from "react-konva";
 import useImage from "use-image";
 import { useNavigate } from "react-router-dom";
 import { io } from "socket.io-client";
+import { getAuth } from "firebase/auth";
 
 const GRID_SIZE = 50;
+const MESTRE_EMAIL = "mestre@reqviemrpg.com";
+const serverUrl = import.meta.env.VITE_SERVER_URL || "http://localhost:5000";
 
 export default function BattleMap() {
   const navigate = useNavigate();
@@ -13,20 +15,28 @@ export default function BattleMap() {
   const [scale, setScale] = useState(1);
   const [tokens, setTokens] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
+  const [isMaster, setIsMaster] = useState(false);
   const fileInputRef = useRef();
   const stageRef = useRef();
   const socketRef = useRef(null);
   const lastEmitRef = useRef(0);
 
   useEffect(() => {
-    // cria e conecta socket (evita múltiplas conexões em hot-reload)
-    const s = io("https://app-rpg.onrender.com", { transports: ["websocket"] });
+    const auth = getAuth();
+    const unsub = auth.onAuthStateChanged((user) => {
+      setIsMaster(user?.email === MESTRE_EMAIL);
+    });
+    return () => unsub();
+  }, []);
+
+  useEffect(() => {
+    const s = io(serverUrl, { transports: ["websocket"] });
     socketRef.current = s;
 
-    s.on("connect", () => console.log("socket conectado:", s.id));
+    s.on("connect", () => console.log("Socket conectado:", s.id));
     s.on("init", (data) => setTokens(data || []));
     s.on("addToken", (token) => {
-      setTokens((prev) => (prev.some(t => t.id === token.id) ? prev : [...prev, token]));
+      setTokens((prev) => (prev.some((t) => t.id === token.id) ? prev : [...prev, token]));
     });
     s.on("updateToken", (token) => {
       setTokens((prev) => prev.map((t) => (t.id === token.id ? token : t)));
@@ -43,29 +53,31 @@ export default function BattleMap() {
     };
   }, [selectedId]);
 
-  // upload -> envia para servidor, servidor retorna URL pública
   const handleFileUpload = async (e) => {
+    if (!isMaster) return alert("Apenas o Mestre pode adicionar tokens.");
     const file = e.target.files[0];
     if (!file) return;
     const formData = new FormData();
     formData.append("file", file);
     try {
-      const resp = await fetch("http://localhost:5000/upload", {
-        method: "POST",
-        body: formData,
-      });
+      const resp = await fetch(`${serverUrl}/upload`, { method: "POST", body: formData });
       const data = await resp.json();
       if (!data?.url) throw new Error("Upload falhou");
-      const token = { id: Date.now(), src: data.url, x: 100, y: 100, width: 100, height: 100 };
+      const token = {
+        id: Date.now(),
+        src: data.url,
+        x: 100,
+        y: 100,
+        width: 100,
+        height: 100,
+      };
       socketRef.current?.emit("addToken", token);
-      // cliente receberá via evento 'addToken' e atualiza state
     } catch (err) {
       console.error("Erro no upload:", err);
       alert("Erro no upload: " + (err.message || err));
     }
   };
 
-  // throttle para updates contínuos (arraste)
   const emitUpdate = (token) => {
     const now = Date.now();
     const THROTTLE_MS = 60;
@@ -76,20 +88,19 @@ export default function BattleMap() {
   };
 
   const updateTokenFinal = (token) => {
-    // update final (sem throttle)
     socketRef.current?.emit("updateToken", token);
   };
 
-  // reordenação (para frente / para trás)
   const reorderAndEmit = (newOrder) => {
+    if (!isMaster) return;
     setTokens(newOrder);
     socketRef.current?.emit("reorder", newOrder);
   };
 
   const bringForward = () => {
-    if (!selectedId) return;
-    setTokens(prev => {
-      const idx = prev.findIndex(t => t.id === selectedId);
+    if (!selectedId || !isMaster) return;
+    setTokens((prev) => {
+      const idx = prev.findIndex((t) => t.id === selectedId);
       if (idx < 0 || idx >= prev.length - 1) return prev;
       const arr = [...prev];
       const [item] = arr.splice(idx, 1);
@@ -100,9 +111,9 @@ export default function BattleMap() {
   };
 
   const sendBackward = () => {
-    if (!selectedId) return;
-    setTokens(prev => {
-      const idx = prev.findIndex(t => t.id === selectedId);
+    if (!selectedId || !isMaster) return;
+    setTokens((prev) => {
+      const idx = prev.findIndex((t) => t.id === selectedId);
       if (idx <= 0) return prev;
       const arr = [...prev];
       const [item] = arr.splice(idx, 1);
@@ -113,12 +124,11 @@ export default function BattleMap() {
   };
 
   const deleteToken = () => {
-    if (!selectedId) return;
+    if (!selectedId || !isMaster) return;
     socketRef.current?.emit("deleteToken", selectedId);
     setSelectedId(null);
   };
 
-  // zoom
   const handleWheel = (e) => {
     e.evt.preventDefault();
     const stage = stageRef.current;
@@ -126,14 +136,19 @@ export default function BattleMap() {
     const scaleBy = 1.05;
     const oldScale = stage.scaleX();
     const pointer = stage.getPointerPosition();
-    const mousePointTo = { x: (pointer.x - stage.x()) / oldScale, y: (pointer.y - stage.y()) / oldScale };
+    const mousePointTo = {
+      x: (pointer.x - stage.x()) / oldScale,
+      y: (pointer.y - stage.y()) / oldScale,
+    };
     const newScale = e.evt.deltaY > 0 ? oldScale / scaleBy : oldScale * scaleBy;
     setScale(newScale);
-    const newPos = { x: pointer.x - mousePointTo.x * newScale, y: pointer.y - mousePointTo.y * newScale };
+    const newPos = {
+      x: pointer.x - mousePointTo.x * newScale,
+      y: pointer.y - mousePointTo.y * newScale,
+    };
     setStagePos(newPos);
   };
 
-  // pan com botão direito segurando e arrastando
   const handleMouseDown = (e) => {
     const stage = stageRef.current;
     if (!stage) return;
@@ -161,21 +176,31 @@ export default function BattleMap() {
     <div style={{ background: "#222", height: "100vh" }} onContextMenu={(e) => e.preventDefault()}>
       <div style={{ position: "absolute", top: 10, left: 10, zIndex: 10 }}>
         <button onClick={() => navigate("/")}>Voltar</button>
-        <button onClick={() => fileInputRef.current.click()} style={{ marginLeft: 10 }}>
-          Adicionar Token
-        </button>
-        <input
-          type="file"
-          ref={fileInputRef}
-          style={{ display: "none" }}
-          accept="image/*"
-          onChange={handleFileUpload}
-        />
-        {selectedId && (
+        {isMaster && (
           <>
-            <button onClick={bringForward} style={{ marginLeft: 10 }}>Para Frente</button>
-            <button onClick={sendBackward} style={{ marginLeft: 10 }}>Para Trás</button>
-            <button onClick={deleteToken} style={{ marginLeft: 10, color: "red" }}>Excluir</button>
+            <button onClick={() => fileInputRef.current.click()} style={{ marginLeft: 10 }}>
+              Adicionar Token
+            </button>
+            <input
+              type="file"
+              ref={fileInputRef}
+              style={{ display: "none" }}
+              accept="image/*"
+              onChange={handleFileUpload}
+            />
+            {selectedId && (
+              <>
+                <button onClick={bringForward} style={{ marginLeft: 10 }}>
+                  Para Frente
+                </button>
+                <button onClick={sendBackward} style={{ marginLeft: 10 }}>
+                  Para Trás
+                </button>
+                <button onClick={deleteToken} style={{ marginLeft: 10, color: "red" }}>
+                  Excluir
+                </button>
+              </>
+            )}
           </>
         )}
       </div>
@@ -193,32 +218,23 @@ export default function BattleMap() {
         onMouseUp={handleMouseUp}
         onWheel={handleWheel}
       >
-        {/* tokens layer (baixo) */}
         <Layer>
-          {tokens.map(token => (
+          {tokens.map((token) => (
             <Token
               key={token.id}
               token={token}
-              isSelected={selectedId === token.id}
-              onSelect={() => setSelectedId(token.id)}
-              onMoveDuring={(attrs) => {
-                // atualiza localmente p/ visual imediato e emite throttled
-                setTokens(prev => prev.map(p => p.id === token.id ? ({ ...p, ...attrs }) : p));
-                emitUpdate({ ...token, ...attrs });
-              }}
-              onDragEnd={(attrs) => {
-                setTokens(prev => prev.map(p => p.id === token.id ? ({ ...p, ...attrs }) : p));
-                updateTokenFinal({ ...token, ...attrs });
-              }}
-              onTransformEnd={(attrs) => {
-                setTokens(prev => prev.map(p => p.id === token.id ? ({ ...p, ...attrs }) : p));
-                updateTokenFinal({ ...token, ...attrs });
-              }}
+              isSelected={isMaster && selectedId === token.id}
+              onSelect={() => isMaster && setSelectedId(token.id)}
+              canResize={isMaster}
+              onMoveDuring={(attrs) => emitUpdate({ ...token, ...attrs })}
+              onDragEnd={(attrs) => updateTokenFinal({ ...token, ...attrs })}
+              onTransformEnd={(attrs) =>
+                isMaster && updateTokenFinal({ ...token, ...attrs })
+              }
             />
           ))}
         </Layer>
 
-        {/* grid sempre no topo */}
         <Layer>
           {Array.from({ length: 200 }).map((_, i) => (
             <Line
@@ -242,21 +258,17 @@ export default function BattleMap() {
   );
 }
 
-/* ==========================
-   Token component
-   ========================== */
-function Token({ token, isSelected, onSelect, onMoveDuring, onDragEnd, onTransformEnd }) {
-  // crossOrigin 'anonymous' — o servidor precisa ter CORS habilitado (já está no server.js)
+function Token({ token, isSelected, onSelect, onMoveDuring, onDragEnd, onTransformEnd, canResize }) {
   const [image] = useImage(token.src, "anonymous");
   const shapeRef = useRef();
   const trRef = useRef();
 
   useEffect(() => {
-    if (isSelected && trRef.current && shapeRef.current) {
+    if (isSelected && trRef.current && shapeRef.current && canResize) {
       trRef.current.nodes([shapeRef.current]);
       trRef.current.getLayer().batchDraw();
     }
-  }, [isSelected]);
+  }, [isSelected, canResize]);
 
   if (!image) return null;
 
@@ -271,13 +283,10 @@ function Token({ token, isSelected, onSelect, onMoveDuring, onDragEnd, onTransfo
         draggable
         onClick={onSelect}
         ref={shapeRef}
-        onDragMove={(e) => {
-          onMoveDuring?.({ x: e.target.x(), y: e.target.y() });
-        }}
-        onDragEnd={(e) => {
-          onDragEnd?.({ x: e.target.x(), y: e.target.y() });
-        }}
+        onDragMove={(e) => onMoveDuring?.({ x: e.target.x(), y: e.target.y() })}
+        onDragEnd={(e) => onDragEnd?.({ x: e.target.x(), y: e.target.y() })}
         onTransformEnd={() => {
+          if (!canResize) return;
           const node = shapeRef.current;
           const newAttrs = {
             x: node.x(),
@@ -285,13 +294,12 @@ function Token({ token, isSelected, onSelect, onMoveDuring, onDragEnd, onTransfo
             width: node.width() * node.scaleX(),
             height: node.height() * node.scaleY(),
           };
-          // reset scales
           node.scaleX(1);
           node.scaleY(1);
           onTransformEnd?.(newAttrs);
         }}
       />
-      {isSelected && <Transformer ref={trRef} />}
+      {isSelected && canResize && <Transformer ref={trRef} />}
     </>
   );
 }

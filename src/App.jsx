@@ -1,5 +1,5 @@
 // src/App.jsx
-import React, { useEffect, useState, useRef } from "react";
+import React, { useEffect, useState, useCallback, memo } from "react";
 import { ThemeProvider, createTheme } from "@mui/material/styles";
 import {
   CssBaseline,
@@ -23,22 +23,12 @@ import {
   signOut,
   onAuthStateChanged,
 } from "firebase/auth";
-import {
-  collection,
-  getDocs,
-  doc,
-  getDoc,
-  setDoc,
-  addDoc,
-  onSnapshot,
-  serverTimestamp,
-} from "firebase/firestore";
+import { collection, getDocs, doc, getDoc, setDoc } from "firebase/firestore";
 import SoundBoard from "./components/SoundBoard";
 import Chat from "./components/Chat";
 import FichaPersonagem from "./components/FichaPersonagem";
 import { BrowserRouter as Router, Routes, Route, Link } from "react-router-dom";
 import BattleMap from "./components/BattleMap";
-import { unlockAudio } from "./utils/audioUnlock";
 import AudioProvider from "./context/AudioProvider";
 import VoiceProvider from "./context/VoiceProvider";
 import MesaRPG from "./components/MesaRPG";
@@ -54,14 +44,10 @@ const theme = createTheme({
   },
   components: {
     MuiInputBase: {
-      styleOverrides: {
-        input: { color: "#ffffff" },
-      },
+      styleOverrides: { input: { color: "#ffffff" } },
     },
     MuiInputLabel: {
-      styleOverrides: {
-        root: { color: "#ffffff" },
-      },
+      styleOverrides: { root: { color: "#ffffff" } },
     },
     MuiTextField: {
       styleOverrides: {
@@ -76,23 +62,99 @@ const theme = createTheme({
 
 const MASTER_EMAIL = "mestre@reqviemrpg.com";
 
+// 🧩 Novo componente isolado para o login
+const LoginForm = memo(function LoginForm({ onLogin }) {
+  const [email, setEmail] = useState("");
+  const [senha, setSenha] = useState("");
+  const [erro, setErro] = useState("");
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    try {
+      await signInWithEmailAndPassword(auth, email, senha);
+      onLogin();
+    } catch (err) {
+      setErro("Email ou senha incorretos");
+    }
+  };
+
+  return (
+    <Paper sx={{ p: 3, m: "auto", maxWidth: 400, display: "flex", flexDirection: "row", alignItems: "center", gap: 2 }}>
+      {/* Logo à esquerda */}
+      <Box sx={{ flexShrink: 0 }}>
+        <img
+          src="/src/assets/logo.png"
+          alt="Logo Réquiem RPG"
+          style={{
+            width: "80px",
+            height: "80px",
+            borderRadius: "50%",
+            objectFit: "contain",
+            boxShadow:
+              "0 0 6px rgba(255,255,255,0.4), 0 0 10px rgba(255,255,255,0.2)",
+          }}
+        />
+      </Box>
+
+      {/* Área do formulário à direita */}
+      <Box sx={{ flex: 1 }}>
+        <Typography variant="h6" sx={{ mb: 2 }}>
+          Fazer Login
+        </Typography>
+        {erro && <Typography color="error">{erro}</Typography>}
+        <form onSubmit={handleSubmit}>
+          <TextField
+            label="E-mail"
+            fullWidth
+            size="small"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            sx={{ mb: 2 }}
+          />
+          <TextField
+            label="Senha"
+            fullWidth
+            size="small"
+            type="password"
+            value={senha}
+            onChange={(e) => setSenha(e.target.value)}
+            sx={{ mb: 2 }}
+          />
+          <Button variant="contained" type="submit" fullWidth>
+            Entrar
+          </Button>
+        </form>
+      </Box>
+    </Paper>
+  );
+});
+
 export default function App() {
   const [user, setUser] = useState(null);
   const [userNick, setUserNick] = useState("");
   const [role, setRole] = useState("");
-  const [loadingAuth, setLoadingAuth] = useState(true);
-
-  const [emailInput, setEmailInput] = useState("");
-  const [passwordInput, setPasswordInput] = useState("");
-
   const [fichasList, setFichasList] = useState([]);
   const [selectedFichaEmail, setSelectedFichaEmail] = useState(null);
   const [createEmailInput, setCreateEmailInput] = useState("");
 
+  const carregarListaFichas = useCallback(async () => {
+    try {
+      const col = collection(db, "fichas");
+      const snapshot = await getDocs(col);
+      const list = snapshot.docs.map((d) => d.id);
+      setFichasList(list);
+      if (list.length > 0 && !selectedFichaEmail) {
+        setSelectedFichaEmail(list[0]);
+      }
+    } catch (err) {
+      console.error("Erro ao carregar lista de fichas:", err);
+    }
+  }, [selectedFichaEmail]);
+
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (u) => {
       setUser(u || null);
-      setLoadingAuth(false);
       if (u) {
         try {
           const userDocRef = doc(db, "users", u.email);
@@ -105,16 +167,16 @@ export default function App() {
             setUserNick(u.email);
             setRole(u.email === MASTER_EMAIL ? "master" : "player");
           }
+
+          if (u.email === MASTER_EMAIL) {
+            carregarListaFichas();
+          } else {
+            setSelectedFichaEmail(u.email);
+          }
         } catch (err) {
           console.error("Erro ao buscar user doc:", err);
           setUserNick(u.email);
           setRole(u.email === MASTER_EMAIL ? "master" : "player");
-        }
-
-        if (u.email === MASTER_EMAIL) {
-          carregarListaFichas();
-        } else {
-          setSelectedFichaEmail(u.email);
         }
       } else {
         setUserNick("");
@@ -123,43 +185,17 @@ export default function App() {
         setSelectedFichaEmail(null);
       }
     });
-
     return () => unsub();
-  }, []);
+  }, [carregarListaFichas]);
 
-  async function carregarListaFichas() {
-    try {
-      const col = collection(db, "fichas");
-      const snapshot = await getDocs(col);
-      const list = snapshot.docs.map((d) => d.id);
-      setFichasList(list);
-      if (list.length > 0 && !selectedFichaEmail) {
-        setSelectedFichaEmail(list[0]);
-      }
-    } catch (err) {
-      console.error("Erro ao carregar lista de fichas:", err);
-    }
-  }
-
-  async function handleLogin(e) {
-    e.preventDefault();
-    try {
-      await signInWithEmailAndPassword(auth, emailInput, passwordInput);
-      setEmailInput("");
-      setPasswordInput("");
-    } catch (err) {
-      alert("Erro no login: " + err.message);
-    }
-  }
-
-  async function handleLogout() {
+  const handleLogout = async () => {
     await signOut(auth);
     setUser(null);
     setUserNick("");
     setRole("");
     setFichasList([]);
     setSelectedFichaEmail(null);
-  }
+  };
 
   const initialFichaBlank = {
     nome: "",
@@ -182,31 +218,14 @@ export default function App() {
       inteligencia: 1,
       vontade: 1,
     },
-    pericias: {
-      atletismo: 0,
-      luta: 0,
-      armaBranca: 0,
-      armaDistancia: 0,
-      furtividade: 0,
-      sobrevivencia: 0,
-      conhecimento: 0,
-      medicina: 0,
-      natureza: 0,
-      percepcao: 0,
-      investigacao: 0,
-      labia: 0,
-      performance: 0,
-      intimidacao: 0,
-      aura: 0,
-    },
+    pericias: {},
     habilidades: [],
-    itens: {
-      equipamento: [],
-      vestes: [],
-      diversos: [],
-    },
+    equipamentos: [],
+    vestes: [],
+    diversos: [],
     moedas: { cobre: 0, prata: 0, ouro: 0 },
     anotacoes: "",
+    dono: user?.email || "",
   };
 
   async function criarFichaParaEmail(email) {
@@ -222,182 +241,201 @@ export default function App() {
     }
   }
 
-  const [audioUnlocked, setAudioUnlocked] = useState(false);
-  const musicRef = useRef(null);
-
-  useEffect(() => {
-    if (audioUnlocked && musicRef.current) {
-      musicRef.current.play().catch(() => {});
-    }
-  }, [audioUnlocked]);
-
-  function handleUnlockAudio() {
-    unlockAudio().then(() => {
-      setAudioUnlocked(true);
-    });
-  }
-
-  // Home component separado (para evitar JSX gigante inline dentro de Route)
   function Home() {
+    const isMaster = role === "master";
+
     return (
       <ThemeProvider theme={theme}>
-        {!audioUnlocked && (
-          <Button
-            onClick={handleUnlockAudio}
-            variant="contained"
-            sx={{
-              position: "fixed",
-              top: 20,
-              right: 20,
-              zIndex: 9999,
-            }}
-          >
-            Ativar Áudio
-          </Button>
-        )}
-
-        <audio ref={musicRef} src="/musicas/tema.mp3" loop />
-
         <CssBaseline />
         <Box sx={{ height: "100vh", p: 2 }}>
-          <Grid container spacing={2} sx={{ height: "100%" }}>
-            <Grid item xs={4} sx={{ height: "100%" }}>
-              <Box sx={{ display: "flex", flexDirection: "column", gap: 2, height: "100%" }}>
-                <Paper sx={{ p: 2 }}>
-                  {!user ? (
-                    <form onSubmit={handleLogin}>
-                      <Typography variant="subtitle1" sx={{ mb: 1 }}>Entrar</Typography>
-                      <TextField
-                        label="E-mail"
-                        fullWidth
-                        size="small"
-                        value={emailInput}
-                        onChange={(e) => setEmailInput(e.target.value)}
-                        sx={{ mb: 1 }}
-                      />
-                      <TextField
-                        label="Senha"
-                        fullWidth
-                        size="small"
-                        type="password"
-                        value={passwordInput}
-                        onChange={(e) => setPasswordInput(e.target.value)}
-                        sx={{ mb: 1 }}
-                      />
-                      <Button variant="contained" type="submit">ENTRAR</Button>
-                    </form>
-                  ) : (
-                    <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                      <Box>
-                        <Typography variant="h6">Bem-vindo,</Typography>
-                        <Typography variant="subtitle1">{userNick}</Typography>
-                        <Typography variant="caption">{user?.email}</Typography>
+          <Grid container sx={{ height: "100%", flexWrap: "nowrap" }}>
+            {/* CHAT / LOGIN - 33% */}
+            <Grid
+              item
+              sx={{
+                flex: "1 1 33%",
+                minWidth: 0,
+                display: "flex",
+                flexDirection: "column",
+                borderRight: "1px solid rgba(255,255,255,0.08)",
+              }}
+            >
+              {!user ? (
+                <LoginForm onLogin={() => {}} />
+              ) : (
+                <>
+                  <Paper sx={{ p: 2, flexShrink: 0 }}>
+                    <Box
+                      sx={{
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "space-between",
+                        mb: 2,
+                      }}
+                    >
+                      <Box sx={{ display: "flex", alignItems: "center", gap: 2 }}>
+                        <img
+                          src="/src/assets/logo.png"
+                          alt="Logo Réquiem RPG"
+                          style={{
+                            width: "60px",
+                            height: "60px",
+                            borderRadius: "50%",
+                            objectFit: "contain",
+                            boxShadow:
+                              "0 0 6px rgba(255,255,255,0.4), 0 0 10px rgba(255,255,255,0.2)",
+                          }}
+                        />
+                        <Box>
+                          <Typography variant="h6">Bem-vindo,</Typography>
+                          <Typography variant="subtitle1">{userNick}</Typography>
+                          <Typography variant="caption" display="block">
+                            {user?.email}
+                          </Typography>
+                          <Typography
+                            variant="caption"
+                            sx={{
+                              fontSize: "0.7rem",
+                              color: "rgba(255,255,255,0.5)",
+                              display: "block",
+                            }}
+                          >
+                            Réquiem RPG — versão 2.0 - By: Zambiazi
+                          </Typography>
+                        </Box>
                       </Box>
+
                       <IconButton color="inherit" onClick={handleLogout} title="Sair">
                         <LogoutIcon />
                       </IconButton>
                     </Box>
-                  )}
 
-                  {user && (
-                    <Box sx={{ display: "flex", gap: 1, mt: 2 }}>
-                      <Button
-                        variant="contained"
-                        component={Link}
-                        to="/map"
-                      >
-                        Abrir Grid
+                    <Box sx={{ display: "flex", justifyContent: "center", gap: 1.5 }}>
+                      <Button variant="contained" component={Link} to="/map">
+                        Grid
                       </Button>
-
-                      <Button
-                        variant="contained"
-                        component={Link}
-                        to="/cronica"
-                      >
-                        Abrir Crônica
+                      <Button variant="contained" component={Link} to="/cronica">
+                        Crônica
                       </Button>
-
-                      <Button
-                        variant="contained"
-                        component={Link}
-                        to="/sistema"
-                      >
-                        Abrir Sistema
+                      <Button variant="contained" component={Link} to="/sistema">
+                        Sistema
                       </Button>
                     </Box>
-                  )}
-                </Paper>
+                  </Paper>
 
-                {user && <MesaRPG userNick={userNick} />}
-                {user && <SoundBoard />}
+                  <Paper sx={{ p: 1, flexShrink: 0, mt: 2 }}>
+                    <MesaRPG userNick={userNick} />
+                  </Paper>
 
-                <Paper sx={{ flex: 1, overflow: "hidden" }}>
-                  <Chat userNick={userNick || "Convidado"} userEmail={user?.email || null} />
-                </Paper>
-              </Box>
+                  <Paper
+                    sx={{
+                      flex: 1,
+                      display: "flex",
+                      flexDirection: "column",
+                      overflow: "hidden",
+                      mt: 2,
+                    }}
+                  >
+                    <Box sx={{ flex: 1, overflowY: "auto", minHeight: 0 }}>
+                      <Chat userNick={userNick} userEmail={user?.email} />
+                    </Box>
+                  </Paper>
+                </>
+              )}
             </Grid>
 
-            <Grid item xs={8} sx={{ height: "100%" }}>
-              <Box sx={{ height: "100%", display: "flex", gap: 2 }}>
-                {role === "master" && (
-                  <Paper sx={{ width: "320px", p: 2, overflowY: "auto" }}>
-                    <Typography variant="h6">Fichas</Typography>
-                    <Divider sx={{ my: 1 }} />
+            {/* ÁREA DE FICHAS */}
+            {isMaster ? (
+              <>
+                <Grid
+                  item
+                  sx={{
+                    flex: "1 1 25%",
+                    minWidth: 0,
+                    display: "flex",
+                    flexDirection: "column",
+                    borderRight: "1px solid rgba(255,255,255,0.08)",
+                  }}
+                >
+                  <Paper sx={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+                    <Box sx={{ p: 2, borderBottom: "1px solid rgba(255,255,255,0.1)" }}>
+                      <Typography variant="h6">Fichas</Typography>
+                    </Box>
+                    <Box sx={{ flex: 1, overflowY: "auto", p: 2 }}>
+                      <Typography sx={{ mb: 1 }}>Lista de fichas:</Typography>
+                      <List dense>
+                        {fichasList.map((fid) => (
+                          <ListItem
+                            key={fid}
+                            selected={selectedFichaEmail === fid}
+                            onClick={() => setSelectedFichaEmail(fid)}
+                            sx={{ cursor: "pointer" }}
+                          >
+                            <ListItemText primary={fid} />
+                          </ListItem>
+                        ))}
+                      </List>
+                      <Divider sx={{ my: 1 }} />
+                      <Typography variant="subtitle2">Criar ficha</Typography>
+                      <TextField
+                        label="E-mail"
+                        fullWidth
+                        size="small"
+                        value={createEmailInput}
+                        onChange={(e) => setCreateEmailInput(e.target.value)}
+                        sx={{ my: 1 }}
+                      />
+                      <Button
+                        variant="outlined"
+                        fullWidth
+                        onClick={() => criarFichaParaEmail(createEmailInput)}
+                      >
+                        Criar ficha vazia
+                      </Button>
+                    </Box>
+                    <Box sx={{ borderTop: "1px solid rgba(255,255,255,0.1)", p: 1 }}>
+                      <SoundBoard isMaster={true} />
+                    </Box>
+                  </Paper>
+                </Grid>
 
-                    {!user ? (
-                      <Typography>Faça login para ver sua ficha.</Typography>
+                <Grid
+                  item
+                  sx={{
+                    flex: "1 1 42%",
+                    minWidth: 0,
+                    display: "flex",
+                    flexDirection: "column",
+                  }}
+                >
+                  <Paper sx={{ flex: 1, overflowY: "auto", p: 2 }}>
+                    {user ? (
+                      <FichaPersonagem user={user} fichaId={selectedFichaEmail} isMestre={true} />
                     ) : (
-                      <>
-                        <Typography sx={{ mb: 1 }}>Lista de fichas (clique para abrir):</Typography>
-                        <List dense>
-                          {fichasList.length === 0 && <Typography>Nenhuma ficha criada.</Typography>}
-                          {fichasList.map((fid) => (
-                            <ListItem
-                              key={fid}
-                              button
-                              selected={selectedFichaEmail === fid}
-                              onClick={() => setSelectedFichaEmail(fid)}
-                            >
-                              <ListItemText primary={fid} />
-                            </ListItem>
-                          ))}
-                        </List>
-                        <Divider sx={{ my: 1 }} />
-                        <Typography variant="subtitle2">Criar ficha para e-mail</Typography>
-                        <TextField
-                          label="E-mail do jogador"
-                          fullWidth
-                          size="small"
-                          value={createEmailInput}
-                          onChange={(e) => setCreateEmailInput(e.target.value)}
-                          sx={{ mb: 1 }}
-                        />
-                        <Button variant="outlined" fullWidth onClick={() => criarFichaParaEmail(createEmailInput)}>
-                          Criar ficha vazia
-                        </Button>
-
-                        <Button variant="text" sx={{ mt: 1 }} onClick={carregarListaFichas}>Atualizar lista</Button>
-                        <SoundBoard isMaster={user?.email === MASTER_EMAIL} />
-                      </>
+                      <Typography>Faça login para editar suas fichas.</Typography>
                     )}
                   </Paper>
-                )}
-
-                <Box sx={{ flex: 1, overflowY: "auto" }}>
+                </Grid>
+              </>
+            ) : (
+              <Grid
+                item
+                sx={{
+                  flex: "1 1 67%",
+                  minWidth: 0,
+                  display: "flex",
+                  flexDirection: "column",
+                }}
+              >
+                <Paper sx={{ flex: 1, overflowY: "auto", p: 2 }}>
                   {user ? (
-                    <FichaPersonagem
-                      user={user}
-                      fichaId={selectedFichaEmail}
-                      isMestrAe={role === "master"}
-                    />
+                    <FichaPersonagem user={user} fichaId={selectedFichaEmail} isMestre={false} />
                   ) : (
-                    <Paper sx={{ p: 2 }}>
-                      <Typography>Faça login para editar suas fichas.</Typography>
-                    </Paper>
+                    <Typography>Faça login para editar suas fichas.</Typography>
                   )}
-                </Box>
-              </Box>
-            </Grid>
+                </Paper>
+              </Grid>
+            )}
           </Grid>
         </Box>
       </ThemeProvider>

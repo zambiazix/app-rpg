@@ -1,108 +1,120 @@
-// server.js
-const express = require("express");
-const http = require("http");
-const { Server } = require("socket.io");
-const multer = require("multer");
-const path = require("path");
-const fs = require("fs");
-const cors = require("cors");
+import express from "express";
+import http from "http";
+import { Server } from "socket.io";
+import multer from "multer";
+import path from "path";
+import fs from "fs";
+import cors from "cors";
+import axios from "axios";
+import FormData from "form-data";
+import dotenv from "dotenv";
 
+dotenv.config();
+
+// --- Inicialização ---
 const app = express();
 const server = http.createServer(app);
-const io = new Server(server, { cors: { origin: "*" } });
-
-// Habilita CORS para todas rotas (incluindo upload e arquivos estáticos)
-app.use(cors());
-
-// Pasta uploads
-const uploadsDir = path.join(__dirname, "uploads");
-if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir);
-
-// multer (preserva extensão do arquivo)
-const upload = multer({
-  storage: multer.diskStorage({
-    destination: (req, file, cb) => cb(null, uploadsDir),
-    filename: (req, file, cb) => {
-      const ext = path.extname(file.originalname);
-      cb(null, `${Date.now()}${ext}`);
-    },
-  }),
+const io = new Server(server, {
+  cors: {
+    origin: "*",
+    methods: ["GET", "POST"],
+    credentials: true,
+  },
 });
 
-// Servir arquivos estáticos e garantir header CORS para imagens
-app.use("/uploads", express.static(uploadsDir, {
-  setHeaders: (res /*, path, stat */) => {
-    res.setHeader("Access-Control-Allow-Origin", "*");
-  }
-}));
+app.use(cors({ origin: "*", credentials: true }));
+app.use(express.json());
+app.use(express.static("public"));
 
-// arquivo persistente para tokens
-const TOKENS_FILE = path.join(__dirname, "tokens.json");
+// --- Pasta temporária para uploads locais ---
+const uploadsDir = path.join(process.cwd(), "uploads_tmp");
+if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir);
+
+// --- Detecta ambiente serverless ---
+const isServerless = process.env.RENDER || process.env.VERCEL;
+
+// --- Multer config ---
+const storage = isServerless
+  ? multer.memoryStorage()
+  : multer.diskStorage({
+      destination: (req, file, cb) => cb(null, uploadsDir),
+      filename: (req, file, cb) =>
+        cb(null, Date.now() + path.extname(file.originalname)),
+    });
+const upload = multer({ storage });
+
+// --- Upload para Imgbb ---
+app.post("/upload", upload.single("file"), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: "Nenhum arquivo enviado" });
+
+    const IMGBB_KEY = process.env.IMGBB_API_KEY;
+    if (!IMGBB_KEY) return res.status(500).json({ error: "IMGBB_API_KEY não configurada" });
+
+    const form = new FormData();
+    form.append("key", IMGBB_KEY);
+    if (isServerless) form.append("image", req.file.buffer.toString("base64"));
+    else form.append("image", fs.createReadStream(req.file.path));
+
+    const resp = await axios.post("https://api.imgbb.com/1/upload", form, {
+      headers: form.getHeaders(),
+    });
+
+    if (!isServerless && req.file.path) fs.unlinkSync(req.file.path);
+
+    const url = resp.data?.data?.url || resp.data?.data?.display_url;
+    if (!url) return res.status(500).json({ error: "Erro: Imgbb não retornou URL" });
+
+    res.json({ url });
+  } catch (err) {
+    console.error("Erro upload:", err.response?.data || err.message);
+    res.status(500).json({ error: "Falha no upload" });
+  }
+});
+
+// --- Tokens e Persistência ---
+let tokens = [];
+const TOKENS_FILE = path.join(process.cwd(), "tokens.json");
 function loadTokens() {
   try {
     const raw = fs.readFileSync(TOKENS_FILE, "utf8");
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    return parsed;
+    return JSON.parse(raw) || [];
   } catch {
     return [];
   }
 }
-function saveTokens(tokens) {
+function saveTokens(data) {
   try {
-    fs.writeFileSync(TOKENS_FILE, JSON.stringify(tokens, null, 2), "utf8");
-  } catch (e) {
-    console.error("Erro salvando tokens:", e);
-  }
+    fs.writeFileSync(TOKENS_FILE, JSON.stringify(data, null, 2));
+  } catch {}
 }
-let tokens = loadTokens();
+tokens = loadTokens();
 
-// util simples de validação
-function isValidToken(t) {
-  return t && (typeof t.id !== "undefined") && typeof t.src === "string" && t.src.length > 0;
-}
+// --- Estado dos participantes de voz ---
+let participants = {}; // { socket.id: { id, nick, speaking } }
 
-// upload endpoint
-app.post("/upload", upload.single("file"), (req, res) => {
-  if (!req.file) return res.status(400).json({ error: "Nenhum arquivo enviado" });
-
-  const fileUrl = `${req.protocol}://${req.get("host")}/uploads/${req.file.filename}`;
-  return res.json({ url: fileUrl });
-});
-
-// socket.io
+// --- Sockets ---
 io.on("connection", (socket) => {
-  console.log("Novo jogador conectado:", socket.id);
-  // envia tokens atuais ao conectar
+  console.log("🟢 Novo jogador conectado:", socket.id);
   socket.emit("init", tokens);
 
+  // --- TOKENS ---
   socket.on("addToken", (token) => {
-    if (!isValidToken(token)) {
-      console.warn("addToken: token inválido recebido", token);
-      return;
+    if (!token.id || !token.src) return;
+    if (!tokens.find((t) => t.id === token.id)) {
+      tokens.push(token);
+      saveTokens(tokens);
+      io.emit("addToken", token);
     }
-    // evita duplicata
-    if (tokens.find(t => t.id === token.id)) return;
-    tokens.push(token);
-    saveTokens(tokens);
-    io.emit("addToken", token);
   });
 
   socket.on("updateToken", (token) => {
-    if (!isValidToken(token)) {
-      console.warn("updateToken: token inválido recebido", token);
-      return;
-    }
     tokens = tokens.map((t) => (t.id === token.id ? token : t));
     saveTokens(tokens);
     io.emit("updateToken", token);
   });
 
   socket.on("reorder", (newTokens) => {
-    if (!Array.isArray(newTokens) || !newTokens.every(isValidToken)) {
-      console.warn("reorder: payload inválido, ignorando");
-      return;
-    }
     tokens = newTokens;
     saveTokens(tokens);
     io.emit("reorder", tokens);
@@ -114,16 +126,47 @@ io.on("connection", (socket) => {
     io.emit("deleteToken", id);
   });
 
-  // Recebe o sinal de voz e repassa para todos os outros
-socket.on("voice-signal", (data) => {
-  socket.broadcast.emit("voice-signal", data);
+  // --- MÚSICA ---
+  socket.on("play-music", (url) => {
+    console.log("🎵 Tocando música:", url);
+    io.emit("play-music", url);
+  });
+  socket.on("stop-music", (url) => io.emit("stop-music", url));
+  socket.on("stop-all-music", () => io.emit("stop-all-music"));
+  socket.on("volume-music", (data) => io.emit("volume-music", data));
+
+  // --- VOZ ---
+  socket.on("voice-join", ({ nick }) => {
+    participants[socket.id] = { id: socket.id, nick: nick || "SemNome", speaking: false };
+    io.emit("voice-participants", Object.values(participants));
   });
 
-// Recebe o comando de música e envia para todos
-socket.on("play-music", (url) => {
-  io.emit("play-music", url);
+  socket.on("voice-signal", ({ target, data }) => {
+    if (target && io.sockets.sockets.get(target)) {
+      io.to(target).emit("voice-signal", { from: socket.id, data });
+    }
   });
-  socket.on("disconnect", () => console.log("Jogador saiu:", socket.id));
+
+  // ✅ Correção: broadcast global de evento de fala
+  socket.on("voice-speaking", ({ id, speaking }) => {
+    if (!id || !participants[id]) return;
+    participants[id].speaking = speaking;
+    io.emit("voice-speaking", { id, speaking });
+  });
+
+  socket.on("voice-leave", () => {
+    delete participants[socket.id];
+    io.emit("voice-participants", Object.values(participants));
+  });
+
+  socket.on("disconnect", () => {
+    delete participants[socket.id];
+    io.emit("voice-participants", Object.values(participants));
+  });
 });
 
-server.listen(5000, () => console.log("Servidor rodando em http://localhost:5000"));
+// --- Inicializa Servidor ---
+const PORT = process.env.PORT || 5000;
+server.listen(PORT, () =>
+  console.log(`🚀 Servidor rodando em http://localhost:${PORT}`)
+);
